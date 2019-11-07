@@ -1,0 +1,19 @@
+{
+  "event": "get_error_count",
+  "responseTopic": "error_count",
+  "errorResponseTopic": "error_count_fail",
+  "integration_type": "Webhook",
+  "url": "https://api.trackjs.com/{{{customerId}}}/v1/errors/",
+  "requestType": "GET",
+  "headers": {
+    "Authorization": "{{{apiKey}}}"
+  },
+  "query": {
+    "size": "1",
+    "startDate": "{{{startDate}}}",
+    "endDate": "{{{endDate}}}",
+    "application": "{{{application}}}"
+  },
+  "noDefaults": true,
+  "responseTemplate": "{{{metadata.totalCount}}}"
+}

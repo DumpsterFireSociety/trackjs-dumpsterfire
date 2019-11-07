@@ -9,9 +9,18 @@ FASTLED_USING_NAMESPACE;
 #define FRAMES_PER_SECOND 15
 #define COLOR_ORDER GRB
 
-bool gReverseDirection = false;
-bool isOn = false;
+//
+// USER SETTINGS
+// Update these settings for your use case. Get your TrackJS credentials from
+// https://my.trackjs.com/
+const String TRACKJS_CUSTOMER_ID = "";
+const String TRACKJS_API_KEY = "";
+const String TRACKJS_APPLICATION_KEY = "";
+const int MAX_ERRORS_PER_HOUR = 5;
 
+Timer errorPollingTimer(60000, pollForErrorCount);
+bool onFire = false;
+bool gReverseDirection = false;
 CRGB leds[NUM_LEDS];
 
 // Fire2012 with programmable Color Palette
@@ -21,8 +30,8 @@ CRGB leds[NUM_LEDS];
 // programmable color palette, instead of through the "HeatColor(...)" function.
 //
 // Four different static color palettes are provided here, plus one dynamic one.
-// 
-// The three static ones are: 
+//
+// The three static ones are:
 //   1. the FastLED built-in HeatColors_p -- this is the default, and it looks
 //      pretty much exactly like the original Fire2012.
 //
@@ -40,36 +49,20 @@ CRGB leds[NUM_LEDS];
 //
 // The dynamic palette shows how you can change the basic 'hue' of the
 // color palette every time through the loop, producing "rainbow fire".
-
 CRGBPalette16 gPal;
 
 void setup()
 {
-    Particle.function("setFire", setFire);
-    Serial.begin(9600);
-    delay(3000); // sanity delay
-    FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-    set_max_power_in_volts_and_milliamps(3,1000); 
-    FastLED.setBrightness( BRIGHTNESS );
     // This first palette is the basic 'black body radiation' colors,
     // which run from black to red to bright yellow to white.
     gPal = HeatColors_p;
-    
     // These are other ways to set up the color palette for the 'fire'.
     // First, a gradient from black to red to yellow to white -- similar to HeatColors_p
-    //   gPal = CRGBPalette16( CRGB::Black, CRGB::Red, CRGB::Yellow, CRGB::White);
-    
+    // gPal = CRGBPalette16( CRGB::Black, CRGB::Red, CRGB::Yellow, CRGB::White);
     // Second, this palette is like the heat colors, but blue/aqua instead of red/yellow
     //   gPal = CRGBPalette16( CRGB::Black, CRGB::Blue, CRGB::Aqua,  CRGB::White);
-    
     // Third, here's a simpler, three-step gradient, from black to red to white
     //   gPal = CRGBPalette16( CRGB::Black, CRGB::Red, CRGB::White);
-}
-
-void loop() {
-    // Add entropy to random number generator; we use a lot of it.
-    random16_add_entropy(random());
-    
     // Fourth, the most sophisticated: this one sets up a new palette every
     // time through the loop, based on a hue that changes every time.
     // The palette is a gradient from black, to a dark color based on the hue,
@@ -80,26 +73,76 @@ void loop() {
     //   CRGB darkcolor  = CHSV(hue,255,192); // pure hue, three-quarters brightness
     //   CRGB lightcolor = CHSV(hue,128,255); // half 'whitened', full brightness
     //   gPal = CRGBPalette16( CRGB::Black, darkcolor, lightcolor, CRGB::White);
-    
-    if (isOn) {
-        Fire2012WithPalette(); // run simulation frame, using palette colors    
-    } else {
-        for(int i = 0; i < NUM_LEDS; i++) {
+
+    Particle.subscribe("error_count", errorCountHandler, MY_DEVICES);
+    Particle.function("setFire", setFire);
+
+    Serial.begin(9600);
+    errorPollingTimer.start();
+
+    delay(3000); // sanity delay
+    FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+    set_max_power_in_volts_and_milliamps(3,1000);
+    FastLED.setBrightness( BRIGHTNESS );
+}
+
+void loop()
+{
+    // Add entropy to random number generator; we use a lot of it.
+    random16_add_entropy(random());
+
+    if (onFire)
+    {
+        Fire2012WithPalette(); // run simulation frame, using palette colors
+    }
+    else
+    {
+        for(int i = 0; i < NUM_LEDS; i++)
+        {
             leds[i] = CRGB::Black;
         }
     }
-    
-    
+
     FastLED.show(); // display this frame
     FastLED.delay(1000 / FRAMES_PER_SECOND);
 }
 
+void pollForErrorCount()
+{
+    unsigned long endDate = Time.now();
+    unsigned long startDate = endDate - 60*60; // 1 hour ago
+
+    String reqData = String::format(
+        "{ \"customerId\": \"%s\", \"apiKey\": \"%s\", \"application\": \"%s\", \"startDate\": \"%s\", \"endDate\": \"%s\" }",
+        TRACKJS_CUSTOMER_ID.c_str(),
+        TRACKJS_API_KEY.c_str(),
+        TRACKJS_APPLICATION_KEY.c_str(),
+        Time.format(startDate, TIME_FORMAT_ISO8601_FULL).c_str(),
+        Time.format(endDate, TIME_FORMAT_ISO8601_FULL).c_str());
+
+    Particle.publish("get_error_count", reqData, PRIVATE);
+}
+
+void errorCountHandler(const char *event, const char *data)
+{
+    int errorCount = atoi(data);
+    Particle.publish("log_error_count", String::format("Errors in last hour: %d", errorCount), PRIVATE);
+
+    onFire = (errorCount >= MAX_ERRORS_PER_HOUR);
+}
+
+bool setFire(String command)
+{
+    onFire = (command == "true");
+    return onFire;
+}
+
 // Fire2012 by Mark Kriegsman, July 2012
 // as part of "Five Elements" shown here: http://youtu.be/knWiGsmgycY
-//// 
+////
 // This basic one-dimensional 'fire' simulation works roughly as follows:
 // There's a underlying array of 'heat' cells, that model the temperature
-// at each point along the line.  Every cycle through the simulation, 
+// at each point along the line.  Every cycle through the simulation,
 // four steps are performed:
 //  1) All cells cool down a little bit, losing heat to the air
 //  2) The heat from each cell drifts 'up' and diffuses a little
@@ -110,7 +153,7 @@ void loop() {
 // Temperature is in arbitrary units from 0 (cold black) to 255 (white hot).
 //
 // This simulation scales it self a bit depending on NUM_LEDS; it should look
-// "OK" on anywhere from 20 to 100 LEDs without too much tweaking. 
+// "OK" on anywhere from 20 to 100 LEDs without too much tweaking.
 //
 // I recommend running this simulation at anywhere from 30-100 frames per second,
 // meaning an interframe delay of about 10-35 milliseconds.
@@ -124,7 +167,7 @@ void loop() {
 //
 // COOLING: How much does the air cool as it rises?
 // Less cooling = taller flames.  More cooling = shorter flames.
-// Default 55, suggested range 20-100 
+// Default 55, suggested range 20-100
 #define COOLING  20
 
 // SPARKING: What chance (out of 255) is there that a new spark will be lit?
@@ -135,19 +178,19 @@ void loop() {
 
 void Fire2012WithPalette()
 {
-// Array of temperature readings at each simulation cell
-  static byte heat[NUM_LEDS];
+    // Array of temperature readings at each simulation cell
+    static byte heat[NUM_LEDS];
 
-  // Step 1.  Cool down every cell a little
+    // Step 1.  Cool down every cell a little
     for( int i = 0; i < NUM_LEDS; i++) {
       heat[i] = qsub8( heat[i],  random8(0, ((COOLING * 10) / NUM_LEDS) + 2));
     }
-  
+
     // Step 2.  Heat from each cell drifts 'up' and diffuses a little
     for( int k= NUM_LEDS - 1; k >= 2; k--) {
       heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2] ) / 3;
     }
-    
+
     // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
     if( random8() < SPARKING ) {
       int y = random8(7);
@@ -168,13 +211,4 @@ void Fire2012WithPalette()
       }
       leds[pixelnumber] = color;
     }
-}
-
-int setFire(String command){
-    if (command == "true") {
-        isOn = true;
-    } else {
-        isOn = false;
-    }
-    return 1;
 }
